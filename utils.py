@@ -1,5 +1,5 @@
 from logging import getLogger
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from typing import List
 import pandas as pd
 import numpy as np
@@ -59,6 +59,13 @@ def seconds_to_hms(seconds: int) -> str:
     minutes = (seconds % 3600) // 60
     secs = seconds % 60
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+def get_dates(number_of_days: int = 1):
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=number_of_days)
+
+    return int(start_date.strftime("%Y%m%d")), int(end_date.strftime("%Y%m%d"))
 
 
 def get_atm(spot, strike_gap):
@@ -173,59 +180,112 @@ def calc_position_size(
     return quantity
 
 
-
-
-
 class regression:
     def __init__(self, m, b, r_squared):
         self.m = m
         self.b = b
         self.r_squared = r_squared
-             
-def regression_line(
-        y: list[float],
-        x: list[int]
-) -> regression:
+
+
+def regression_line(y: list[float], x: list[int]) -> regression:
     x_mean = sum(x) / len(x)
     y_mean = sum(y) / len(y)
 
-    numerator = sum(
-        (x[i] - x_mean) *
-        (y[i] - y_mean)
-        for i in range(len(y))
-    )
+    numerator = sum((x[i] - x_mean) * (y[i] - y_mean) for i in range(len(y)))
 
-    denominator = sum(
-        (x[i] - x_mean) ** 2
-        for i in range(len(x))
-    )
+    denominator = sum((x[i] - x_mean) ** 2 for i in range(len(x)))
 
     m = numerator / denominator
     b = y_mean - m * x_mean
 
     # Predicted y values
-    predicted = [
-        m * x[i] + b
-        for i in range(len(x))
-    ]
+    predicted = [m * x[i] + b for i in range(len(x))]
 
     # Residual sum of squares
-    ss_res = sum(
-        (y[i] - predicted[i]) ** 2
-        for i in range(len(y))
-    )
+    ss_res = sum((y[i] - predicted[i]) ** 2 for i in range(len(y)))
 
     # Total sum of squares
-    ss_tot = sum(
-        (value - y_mean) ** 2
-        for value in y
-    )
+    ss_tot = sum((value - y_mean) ** 2 for value in y)
 
     # R²
     r_squared = 1 - (ss_res / ss_tot)
 
     return regression(m, b, r_squared)
 
+def add_regression_lines(
+    df: pd.DataFrame,
+    window: int = 10,
+    source: str = "close"
+):
+    for i in range(window - 1, len(df)):
+
+        prices = df[source].iloc[i-window+1:i+1].tolist()
+        times = list(range(window))
+
+        result = regression_line(prices, times)
+
+        df.loc[i, "regression_m"] = result.m
+        df.loc[i, "regression_b"] = result.b
+        df.loc[i, "r_squared"] = result.r_squared
+
+    return df.dropna(
+        subset=["regression_m", "regression_b", "r_squared"]
+    )
 
 
+def resample_df(df: pd.DataFrame, interval: int) -> pd.DataFrame:
+    resampled = []
 
+    interval //= 60
+
+    columns = ["date", "time", "open", "high", "low", "close", "volume"]
+
+    for i in range(0, len(df), interval):
+        d = df.iloc[i:i + interval][columns]
+
+        if d.empty:
+            continue
+
+        new = d.aggregate({
+            "date": lambda x: x.iloc[0],
+            "time": lambda x: x.iloc[0],
+            "open": lambda x: x.iloc[0],
+            "high": "max",
+            "low": "min",
+            "close": lambda x: x.iloc[-1],
+            "volume": "sum",
+        })
+
+        resampled.append(new)
+
+    return (
+        pd.DataFrame(resampled)
+        .sort_values(["date", "time"])
+        .reset_index(drop=True)
+    ).astype(
+        {"date": int, "time": int}
+    )
+
+
+def compute_rsi(prices: List[float]):
+    changes = [prices[i] - prices[i -1] for i in range(1, len(prices))]
+
+    gaines = [c if c > 0 else 0 for c in changes]
+    losses = [-c if c < 0 else 0 for c in changes]
+
+    avrage_gain = sum(gaines) / len(gaines)
+    avrage_loss = sum(losses) / len(losses)
+
+    rs = avrage_gain / avrage_loss
+
+    return 100 - (100 / (1 + rs))
+
+def add_rsi_to_df(df: pd.DataFrame, source = "close", length = 14):
+
+    prices = df[source]
+
+    for i in range(0, len(prices), length):
+
+        chunk = prices.iloc[i: i + length]
+        ...
+    
